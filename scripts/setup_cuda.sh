@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# First load your site's Python/CUDA modules if required. Never run on macOS.
+# First load your site's Python/CUDA modules if required.
 if [[ "$(uname -s)" != Linux ]]; then
   echo "CUDA setup requires Linux." >&2
   exit 1

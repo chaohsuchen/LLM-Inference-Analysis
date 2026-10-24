@@ -7,11 +7,36 @@ from collections import defaultdict
 from pathlib import Path
 
 
+def export_data(paths, report):
+    """Export measured request events for a later static interactive replay."""
+    fields = ("id", "class", "ok", "input_tokens", "server_prompt_tokens", "output_tokens",
+              "dispatch_s", "first_content_s", "last_content_s", "completion_s",
+              "ttft_s", "e2e_s", "tpot_s", "content_chunks", "finish_reason")
+    cells = []
+    for path in paths:
+        summary = json.loads(path.read_text())
+        if summary.get("measurement_source") != "live_vllm_http":
+            raise ValueError(f"Expected measured vLLM data in {path}")
+        requests = []
+        for line in (path.parent / "requests.jsonl").read_text().splitlines():
+            row = json.loads(line)
+            requests.append({key: row.get(key) for key in fields})
+        cells.append({"summary": summary,
+                      "requests": sorted(requests, key=lambda r: r["dispatch_s"])})
+    data = {"schema_version": 1, "measurement_source": "live_vllm_http",
+            "timebase": "seconds since each measured cell start; cells are independent",
+            "timeline_semantics": "client HTTP observations; no GPU scheduler or exact per-token trace",
+            "cells": cells}
+    (report / "data.json").write_text(json.dumps(data, separators=(",", ":")))
+    return data
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=Path)
     args = parser.parse_args()
-    rows = [json.loads(p.read_text()) for p in sorted(args.results.rglob("summary.json"))]
+    paths = sorted(args.results.rglob("summary.json"))
+    rows = [json.loads(p.read_text()) for p in paths]
     if not rows:
         raise SystemExit("No summary.json files found")
     environments = {(r["backend"], r["model"], r["profile"]) for r in rows}
@@ -19,6 +44,7 @@ def main():
         raise SystemExit("Report one backend/model/profile at a time to avoid invalid comparisons")
     report = args.results / "report"
     report.mkdir(exist_ok=True)
+    export_data(paths, report)
     with (report / "cells.csv").open("w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=sorted(set().union(*(r.keys() for r in rows))))
         writer.writeheader()
@@ -27,10 +53,10 @@ def main():
     groups = defaultdict(list)
     for row in rows:
         groups[(row["workload"], row["concurrency"], row["config"])].append(row)
-    title = "SYNTHETIC PROTOCOL TEST" if rows[0]["synthetic"] else "Measured serving results"
+    title = "Measured vLLM serving results"
     lines = [f"# {title}", "", f"Backend: {rows[0]['backend']}; model: {rows[0]['model']}.", "",
              "Each table value is the median across runs, with [min, max]. Per-run quantiles are in cells.csv.",
-             "A p99 from a small sample is descriptive only. Do not claim stable tail latency from the mini run.", "",
+             "A p99 from a small sample is descriptive only; the smoke profile does not establish stable tail latency.", "",
              "| Workload | Concurrency | Config | Runs | Output tok/s | TTFT p50 (s) | TTFT p99 (s) | Short TTFT p95 (s) |",
              "|---|---:|---|---:|---:|---:|---:|---:|"]
     for key, values in sorted(groups.items()):

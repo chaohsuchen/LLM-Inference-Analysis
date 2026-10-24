@@ -14,7 +14,7 @@ def fit_text(tokenizer, text, target):
     return tokenizer.decode(ids, skip_special_tokens=False)
 
 
-def make_workload(tokenizer, kind, n, seed=42, namespace="trial", mini=False, id_offset=0):
+def make_workload(tokenizer, kind, n, seed=42, namespace="trial", id_offset=0):
     """Shared prefix is identical within a cell; unique IDs occur before long text.
 
     mixed deliberately has no long shared prefix so caching cannot explain a
@@ -26,9 +26,9 @@ def make_workload(tokenizer, kind, n, seed=42, namespace="trial", mini=False, id
     rows = []
     for i in range(id_offset, id_offset + n):
         long = kind == "mixed" and i % 4 == 0
-        target = (256 if long else 64) if mini else (3072 if long else 256)
+        target = 3072 if long else 256
         if kind == "shared":
-            target = 192 if mini else 2048
+            target = 2048
             prefix = f"Experiment {namespace}\n" + fit_text(tokenizer, POLICY, target)
             text = prefix + f"\nTask {i}: Diagnose service queue-{i} and propose one next action.\nAssessment:"
         else:

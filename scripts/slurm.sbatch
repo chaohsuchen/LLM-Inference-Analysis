@@ -18,6 +18,6 @@ nvidia-smi
 # Keep one homogeneous GPU per run; never pool A4500/A6000 results.
 OUT="results/cuda-${SLURM_JOB_ID}"
 srun --ntasks=1 .venv/bin/python -m lab.run \
-  --backend vllm --profile full --model "${MODEL:-Qwen/Qwen2.5-1.5B-Instruct}" \
+  --profile "${PROFILE:-full}" --model "${MODEL:-Qwen/Qwen2.5-1.5B-Instruct}" \
   --output "$OUT"
 .venv/bin/python -m lab.report "$OUT"

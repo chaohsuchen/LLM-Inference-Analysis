@@ -17,13 +17,12 @@ def percentile(values, q):
     return values[low] + (values[math.ceil(pos)] - values[low]) * (pos - low)
 
 
-async def request(session, base_url, model, row, output_tokens, backend, timeout):
+async def request(session, base_url, model, row, output_tokens, timeout, origin_s=None):
     payload = {"model": model, "prompt": row["prompt"], "stream": True,
                "max_tokens": output_tokens, "temperature": 0,
-               "stream_options": {"include_usage": True}}
-    if backend == "vllm":
-        payload["ignore_eos"] = True
+               "stream_options": {"include_usage": True}, "ignore_eos": True}
     start = time.perf_counter()
+    origin_s = start if origin_s is None else origin_s
     first = last = None
     chunks = 0
     usage = {}
@@ -65,13 +64,17 @@ async def request(session, base_url, model, row, output_tokens, backend, timeout
         tokens = usage.get("completion_tokens")
         result.update(ok=True, error=None, ttft_s=first - start,
                       e2e_s=time.perf_counter() - start,
-                      tpot_s=(last - first) / (tokens - 1) if tokens and tokens > 1 else None,
+                      tpot_s=(last - first) / (tokens - 1) if tokens and tokens > 1 and chunks > 1 else None,
                       output_tokens=tokens, server_prompt_tokens=usage.get("prompt_tokens"),
                       content_chunks=chunks, finish_reason=finish, sample=sample)
     except Exception as exc:
         result.update(ok=False, error=f"{type(exc).__name__}: {exc}",
                       ttft_s=None, e2e_s=time.perf_counter() - start,
                       tpot_s=None, output_tokens=None, sample=sample)
+    result.update(dispatch_s=start - origin_s,
+                  first_content_s=first - origin_s if first is not None else None,
+                  last_content_s=last - origin_s if last is not None else None,
+                  completion_s=time.perf_counter() - origin_s)
     return result
 
 
@@ -95,7 +98,7 @@ def summarize(rows, wall_s, slo_s):
     return result
 
 
-async def benchmark(base_url, model, rows, concurrency, output_tokens, backend,
+async def benchmark(base_url, model, rows, concurrency, output_tokens,
                     out_dir, metadata, warmup_rows=(), timeout=180, slo_s=2):
     if concurrency < 1 or not rows:
         raise ValueError("Positive concurrency and nonempty workload required")
@@ -109,14 +112,14 @@ async def benchmark(base_url, model, rows, concurrency, output_tokens, backend,
     results = []
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=concurrency)) as session:
         for row in warmup_rows:
-            result = await request(session, base_url, model, row, output_tokens, backend, timeout)
+            result = await request(session, base_url, model, row, output_tokens, timeout)
             if not result["ok"]:
                 raise RuntimeError(f"Warmup failed: {result['error']}")
         with (out_dir / "requests.jsonl").open("w") as file:
             async def worker():
                 while not queue.empty():
                     row = queue.get_nowait()
-                    result = await request(session, base_url, model, row, output_tokens, backend, timeout)
+                    result = await request(session, base_url, model, row, output_tokens, timeout, origin_s=start)
                     results.append(result)
                     file.write(json.dumps(result) + "\n")
                     file.flush()

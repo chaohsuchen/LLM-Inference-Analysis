@@ -47,7 +47,7 @@ as shared-prefix requests. A latency reduction alone does not prove a cache hit.
 
 Synthetic agent-inspired prompts, closed-loop arrivals, small model and finite
 samples limit generalization. No actual agent tool execution or answer-quality
-evaluation occurs. Apple/NVIDIA observations do not measure ROCm or AMD GPUs.
+evaluation occurs. NVIDIA observations do not measure ROCm or AMD GPUs.
 A future AMD replication should use a supported ROCm vLLM environment, preserve
 the same prompts and protocol, and report hardware/backend differences explicitly.
 Do not install NVIDIA wheels on ROCm hosts.

@@ -1,67 +1,68 @@
-# Local Git and manual GitHub upload
+# Save experiments and publish manually
 
-The Desktop project is a local Git repository on branch `main`. The initial
-commit contains the code and documentation. No remote is configured and nothing
-has been published. Git uses your existing configured author identity.
+Your Desktop project is a local Git repository on branch `main`. No remote is
+configured and nothing has been published. Virtual environments, downloaded
+weights, local caches, job logs, and `results/` are ignored.
 
-## During experiments
+## Save code changes
 
-Run these commands from the project root:
+From the project root:
 
 ```bash
 git status
 git diff
-git add lab scripts tests docs README.md pyproject.toml
+git add lab scripts tests docs README.md QUICKSTART.md pyproject.toml
 git diff --cached
-git commit -m "Describe the experiment or code change"
+git commit -m "Describe the code or experiment change"
 ```
 
-Only commit when you have an intentional change. Local virtual environments,
-downloaded weights, caches, logs, secrets in `.env` files, and `results/` are
-ignored. Keep the complete raw results in your local or cluster storage.
-An ignore rule does not detect every secret: inspect staged changes before
-committing, especially if you add configuration or credentials later.
+Keep complete raw data on your server/local storage. Inspect staged files for
+credentials and private identifiers before each commit.
 
-## After the experiments
-
-Create a curated, portable evidence folder:
+## After the server experiment
 
 ```bash
 mkdir -p docs/results
-# Replace YOUR_RUN with the completed cluster run directory.
-cp results/YOUR_RUN/report/REPORT.md docs/results/
-cp results/YOUR_RUN/report/cells.csv docs/results/
-cp results/YOUR_RUN/report/tradeoffs.png docs/results/
-cp results/YOUR_RUN/environment.json docs/results/
+cp results/cuda-JOB_ID/report/REPORT.md docs/results/
+cp results/cuda-JOB_ID/report/cells.csv docs/results/
+cp results/cuda-JOB_ID/report/tradeoffs.png docs/results/
+cp results/cuda-JOB_ID/report/data.json docs/results/
 ```
 
-Review the files for private paths or identifiers before committing. Add your
-measured conclusions to the README and complete `docs/RESEARCH_NOTES.md`. Identify
-the hardware, model, precision, request counts, repeats, and limitations. Label
-Mac smoke measurements separately from cluster optimization comparisons.
+Replace JOB_ID with the completed job. Review summary metadata for private paths
+or identifiers. Complete `docs/RESEARCH_NOTES.md` and update the README with
+measured findings, hardware, model, settings, and limitations.
 
 ```bash
 git add docs/results docs/RESEARCH_NOTES.md README.md
 git diff --cached
-git commit -m "Add measured inference experiment results and analysis"
+git commit -m "Add measured inference results and analysis"
 ```
 
-## Publish manually when ready
+## Interactive animation
 
-Create an empty repository in your GitHub account. Leave its initialization
-options empty so it does not create a separate README or initial commit.
-Choose your repository name, then replace BOTH placeholders below with your
-actual GitHub username and repository name:
+After obtaining real results, build a static HTML/CSS/JavaScript frontend under
+`docs/` that reads `results/data.json`. It should work without a GPU or model
+server for viewers. Use relative URLs such as `./results/data.json` so a project
+website works under a repository subpath. See `VISUALIZATION.md` for the contract.
+
+The frontend is not implemented yet. Once implemented, it can be published with
+GitHub Pages from the repository's `docs/` folder, using the hosting settings
+available for your repository. GitHub hosts the replay, not inference itself.
+See [GitHub's publishing-source documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
+
+## Push when ready
+
+Create an empty GitHub repository without an automatically created README or
+separate initial commit. Replace both placeholders with your actual values:
 
 ```bash
 git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git
 git push -u origin main
 ```
 
-Use your existing GitHub authentication when prompted. If `origin` already
-exists, inspect `git remote -v` and confirm its destination before changing it.
-For later updates, commit locally and run `git push`.
-
-The supplied source ZIP is for transferring code. Use the Desktop repository
-for preserving this local Git history, or transfer its `.git` folder along with
-the project if you need to work from another machine.
+If `origin` already exists, inspect `git remote -v` before changing it. For future
+updates, commit locally and run `git push`. The supplied source ZIP excludes
+Git history; transfer `.git` separately if you want to continue the same history
+on your server. You can also bring results back and commit them in your Desktop
+repository.

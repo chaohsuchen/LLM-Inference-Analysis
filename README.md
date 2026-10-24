@@ -1,101 +1,115 @@
 # LLM Inference Lab: When Do Serving Optimizations Help?
 
-An experimental platform for studying the latency–throughput trade-off under
-agent-inspired shared policies and mixed-length tool observations.
+A Linux CUDA/SLURM experiment platform for measuring the latency–throughput
+trade-off under shared agent policies and mixed-length tool observations.
 
-**Research question:** Under what concurrency and prompt-sharing conditions do
-batching, prefix caching, and chunked prefill improve serving efficiency?
+**Workflow:** upload source → run real GPU experiments → analyze measured results
+→ build an interactive animation → publish the code and visualization on GitHub.
 
-This project uses existing inference engines. It does not implement a scheduler,
-PagedAttention, tool execution, or an autonomous agent. NVIDIA measurements do
-not establish AMD hardware performance. The portable experiment methodology,
-cache analysis, and scheduling trade-offs are the relevant AMD team discussion.
+There is one inference engine: vLLM. Experiments generate real model responses.
+Prompt workloads are deterministic synthetic inputs inspired by agent services;
+they do not execute tools or implement a complete autonomous agent.
 
-## Start on an M3 Mac
+## 1. Upload and install
 
-Requirements: Apple Silicon, Python 3.11 (or `uv` installed), internet for the first
-dependency/model download, and enough free unified memory for a 0.5B 4-bit model.
-
-```bash
-cd llm-inference-lab
-bash scripts/setup_mac.sh
-bash scripts/mini_mac.sh
-```
-
-The mini run starts a local MLX server, runs 3 workloads at concurrency 1 and 2
-(8 measured requests plus 2 warmups per cell, 24-token output cap), stops the
-server, and writes a report. The default model is
-`mlx-community/Qwen2.5-0.5B-Instruct-4bit`. Allow time for the first download.
-MLX may stop at EOS earlier than the output cap. Inspect actual output counts.
-
-The Mac validates requests, streaming metrics, artifacts, and the workload design.
-It does not validate vLLM switches or predict CUDA/ROCm speedups. Engines,
-quantization, model sizes, and hardware differ; never plot Mac and CUDA speed
-as a controlled optimization comparison.
-
-```bash
-# No model download: explicitly synthetic protocol check
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m lab.run --backend mock --output results/mock-check
-.venv/bin/python -m lab.report results/mock-check
-```
-
-## Upload and run on SLURM
-
-Upload this project without `.venv`, `__pycache__`, or local caches. A Mac virtual
-environment cannot be reused on Linux. Use one GPU per job; the default 1.5B FP16
-model is intentionally modest for the A4500/A6000 class. Actual memory availability
-and software compatibility must be checked on your node.
+Extract the source ZIP into a directory you own on your Linux cluster. Requirements:
+Python 3.11, a compatible NVIDIA driver, a GPU allocation, and network access or
+prefetched packages/weights. Load site-specific Python/CUDA modules if required.
 
 ```bash
 cd llm-inference-lab
-# Load site-specific Python/CUDA modules first, if your site requires them.
 bash scripts/setup_cuda.sh
+```
 
-# Prefetch on a node with internet if compute nodes cannot download models.
+This creates a project-local virtual environment without administrator access.
+The CUDA extra pins vLLM 0.20.0. Follow its official driver/toolchain requirements;
+avoid overriding its Torch/CUDA dependencies independently.
+
+If compute nodes cannot access the internet, prefetch the public default model
+on a permitted node, using storage shared with your compute allocation:
+
+```bash
 .venv/bin/python -c 'from huggingface_hub import snapshot_download; snapshot_download("Qwen/Qwen2.5-1.5B-Instruct")'
-
-# Substitute your cluster's partition/account/GPU resource syntax.
-sbatch --partition=YOUR_PARTITION --account=YOUR_ACCOUNT scripts/slurm.sbatch
 ```
 
-If your site uses GPU types, pass its exact `--gres=gpu:TYPE:1` syntax. Do not mix
-GPU types within a comparison. Submit from the project root; the script resolves
-it through `SLURM_SUBMIT_DIR`. Model downloads must be available on shared storage
-if they are prefetched outside the compute node. Increase the job time if needed.
-The configured six hours is a limit, not a runtime guarantee.
+You can set `HF_HOME` to a shared cache before both prefetching and submitting,
+or provide a local snapshot path through `MODEL`. Use your site's supported
+offline installation workflow if it also restricts package downloads.
 
-Run a cluster smoke test before the complete matrix:
+## 2. Submit a real GPU smoke test
+
+From the project root, replace the partition/account values with your site's
+settings. Supply a GPU type using its exact resource syntax if required.
 
 ```bash
-# Inside an allocated GPU job or interactive allocation:
-.venv/bin/python -m lab.run --backend vllm --profile mini \
-  --configs batch cache chunk512 --output results/cuda-smoke
-.venv/bin/python -m lab.report results/cuda-smoke
+PROFILE=smoke sbatch --partition=YOUR_PARTITION --account=YOUR_ACCOUNT scripts/slurm.sbatch
 ```
 
-Full run: 6 engine configurations × 3 workloads × 3 client concurrency levels ×
-3 repetitions = 162 cells, with 128 measured requests/cell and 128 output tokens.
-The runner randomizes configuration order within each repetition. Each server is
-fresh per configuration/repetition. Each cell uses fresh prompt namespaces to
-avoid cache reuse across cells; warmups prime shared prefixes within the cell.
-All configurations replay the same workload order and text for a given cell.
+The smoke profile runs the same real model and prompt lengths as the full study,
+with fewer requests: 8 per cell, concurrency 1 and 2, one repetition, and a
+24-token output length. It validates all six serving configurations. It is not
+enough data for research conclusions about p99.
 
-If time is tight, run a smaller pilot before committing to all cells:
+Inspect `slurm-JOB_ID.out`, server logs and request failures before the full run.
+If your site restricts environment export, submit with
+`sbatch --export=ALL,PROFILE=smoke ... scripts/slurm.sbatch`.
+
+Inside an existing GPU allocation, the equivalent direct command is:
 
 ```bash
-.venv/bin/python -m lab.run --backend vllm --profile full \
-  --configs batch cache chunk512 --repeats 1 --requests 64 \
+.venv/bin/python -m lab.run --profile smoke --output results/gpu-smoke
+.venv/bin/python -m lab.report results/gpu-smoke
+```
+
+Do not run GPU experiments on an unallocated login node.
+
+## 3. Run the full experiment
+
+```bash
+PROFILE=full sbatch --partition=YOUR_PARTITION --account=YOUR_ACCOUNT scripts/slurm.sbatch
+```
+
+Defaults: Qwen2.5-1.5B-Instruct, FP16, one GPU, context limit 8192, 128 output
+tokens, 128 measured requests per cell, 2 warmups per cell, and 3 repetitions.
+The matrix is 6 configurations × 3 workloads × 3 concurrency levels × 3 repeats
+= **162 cells**. Concurrency levels are 1, 8 and 32. The six-hour SLURM limit
+is configurable and is not a runtime guarantee.
+
+Use one homogeneous GPU for a comparison. Never pool A4500 and A6000 measurements
+as though they were repetitions on the same hardware. The small default model
+keeps the first study practical; verify memory availability on the allocated GPU.
+
+The Python entry point is `lab/run.py:main()`:
+
+```text
+scripts/slurm.sbatch → lab.run
+  → start vLLM for a configuration
+  → generate deterministic prompts with workloads.py
+  → stream real responses and measure them with bench.py
+  → preserve raw records, metrics, logs and GPU samples
+  → report.py produces tables, plots and animation data
+```
+
+Configuration order is randomized within each repetition. The engine restarts
+for each configuration/repetition. Each cell has fresh cache keys and identical
+replayed input text/order across configurations. Warmups prime shared prefixes
+and are excluded from the timed region. Warmup IDs are disjoint from measured IDs.
+
+For a reduced exploratory pilot inside a GPU allocation:
+
+```bash
+.venv/bin/python -m lab.run --profile full \
+  --configs batch cache chunk512 --requests 64 --repeats 1 \
   --concurrency 1 8 --output results/pilot
+.venv/bin/python -m lab.report results/pilot
 ```
 
-This pilot is exploratory; it is not the complete experiment. To assess p99
-reliably, increase request counts (for example `--requests 1000`) and repetitions.
-128 requests/cell gives only a few observations near the upper tail.
+For stronger tail estimates, increase `--requests` and repetitions after checking
+runtime. 128 requests per cell provides limited evidence near p99.
 
-## Controlled comparisons
+## Research design
 
-| Config | Max sequences | Prefix cache | Chunked prefill | Token budget |
+| Configuration | Max sequences | Prefix cache | Chunked prefill | Token budget |
 |---|---:|---|---|---:|
 | serial | 1 | off | off | 8192 |
 | batch | 32 | off | off | 8192 |
@@ -104,114 +118,102 @@ reliably, increase request counts (for example `--requests 1000`) and repetition
 | chunk2048 | 32 | off | on | 2048 |
 | combined | 32 | on | on | 512 |
 
-vLLM always uses its scheduler. `serial` restricts active sequences; it is **not**
-a continuous-batching-off implementation. Both client concurrency and engine
-sequence limit affect observed queueing. The chunked-prefill comparison changes
-prefill policy and token budget together: describe it as a scheduling configuration
-comparison, not the isolated effect of a Boolean switch.
-
-| Hypothesis | Compare | Evidence to inspect |
+| Hypothesis | Comparison | Main evidence |
 |---|---|---|
-| Batching pays off at higher concurrency | serial vs batch, unique | throughput, TTFT, GPU utilization |
-| Prefix reuse helps shared policies more than unique requests | batch vs cache, shared AND unique | TTFT, actual prompt tokens, cache metric deltas |
-| Smaller prefill budgets reduce short-request interference | batch vs chunk512 vs chunk2048, mixed | short TTFT p95, long TTFT, throughput |
-| Techniques interact | combined vs cache and chunk512 | the same latency/throughput measures |
+| Batching helps more at higher concurrency | serial vs batch, unique | throughput, TTFT, GPU utilization |
+| Prefix reuse benefits shared policies | batch vs cache, shared and unique control | TTFT, cache-counter deltas |
+| Prefill budgets change short/long interference | batch vs chunk512 vs chunk2048, mixed | short TTFT p95, long TTFT, throughput |
+| Techniques interact | combined vs cache and chunk512 | latency–throughput trade-off |
 
-`unique`: approximately 256 policy tokens with a unique identifier near the start.
-`shared`: approximately 2048 identical policy tokens followed by a unique task.
-`mixed`: 25% long (~3072 tokens), 75% short (~256), unique early identifiers.
+`serial` limits active sequences to one; it does not disable vLLM's scheduler.
+Chunk comparisons change prefill policy and token budget together, so report
+them as scheduling-configuration comparisons rather than an isolated switch effect.
+
+Workloads:
+
+- `unique`: roughly 256 policy tokens, with a unique ID near the start to prevent
+  long prefix reuse.
+- `shared`: roughly 2048 shared policy tokens followed by a unique task.
+- `mixed`: 25% long (~3072 tokens), 75% short (~256), with early unique IDs.
+
 Exact lengths including wrappers are recorded using the model tokenizer and
-server-reported usage. Tokenizer decode/encode can move lengths slightly. Mini
-uses smaller prefixes. These repeated runbooks are synthetic workload structure,
-not a representative real agent dataset or a language-quality benchmark.
+server-reported usage. Inputs are raw completions prompts to avoid chat-template
+drift. Generation is greedy; vLLM ignores EOS to control output lengths. Forced
+continuations can be unnatural, and this experiment makes no answer-quality claim.
 
-Requests use the completions endpoint and a fixed raw prompt format, avoiding
-chat-template drift. FP16, model, seed, output length cap, and context limit remain
-fixed on the cluster. EOS is ignored in vLLM for controlled output lengths; this
-is a throughput workload and can force unnatural continuations. It makes no
-model-quality preservation claim. Inspect generated samples manually.
+## Measurements and saved evidence
 
-## What is measured
+- TTFT: dispatch to first nonempty content event, including server queueing and
+  HTTP overhead. This is client-observed first-content latency.
+- End-to-end latency: dispatch to stream completion. Time in the client's
+  undispatched work queue is excluded. Load is closed-loop fixed concurrency.
+- TPOT: first-to-last content duration / (reported output tokens − 1). It is an
+  approximation under stream coalescing, and unavailable for a single content event.
+- Throughput: successful output tokens / timed batch wall duration including drain.
+  Missing token usage produces `null`; stream chunks are never counted as tokens.
+- Quantiles: linear interpolation over successful requests. Failures are counted
+  separately, saved, and cause the run to stop after the cell. There are no retries.
+- GPU evidence: one-second `nvidia-smi` samples of memory, utilization and power.
+  Raw `/metrics` snapshots before/after each cell preserve cache counters. They
+  do not establish per-request memory or scheduler activity.
+- Replay timestamps: dispatch, first content, last content and completion, measured
+  in seconds relative to each measured cell start. These are client HTTP events.
 
-- TTFT: request dispatch to first nonempty content event; includes server queueing
-  and HTTP overhead. It is a client-observed estimate of first-token latency.
-- End-to-end: dispatch to stream completion. No time waiting in the client's
-  undispatched work queue is included. This is closed-loop fixed-concurrency load,
-  not an open-loop production arrival process or saturation proof.
-- TPOT: time from first to last content event divided by (reported output tokens − 1).
-  Stream coalescing makes this an approximation; no per-token ITL p99 is claimed.
-- Throughput: successful output tokens / measured batch wall time, including the
-  drain. Only server usage counts are used. Missing usage is `null`, never inferred
-  from chunk counts. Request throughput and TTFT-SLO goodput are also recorded.
-- p50/p95/p99: linear interpolation over successful requests; failures are counted
-  separately and terminate a run after persisting the failing cell.
-- GPU memory/utilization/power: one-second `nvidia-smi` samples. `/metrics` snapshots
-  before/after each cell preserve vLLM cache counters. They are raw evidence;
-  the report does not invent cache-hit rates or claim per-request GPU memory.
+Each result directory also records package versions, the tokenizer identity,
+server commands/model metadata, complete workloads, per-request records and
+per-cell summaries. Keep these files for reproducibility and preserve an immutable
+model snapshot for later replication. Dependency ranges are recorded in pip-freeze.txt.
 
-Warmups are excluded from timings. This studies a warm shared-prefix regime,
-not cold-start cache latency. Unique warmup IDs are disjoint from measured IDs.
-Two requests warm the engine; inspect stability and expand warmups for rigorous
-publication work. There are no retries hiding overload or network errors.
+## 4. Build the interactive animation after collecting results
 
-## Results and provenance
+The SLURM script generates `results/cuda-JOB_ID/report/` containing:
 
-Each result directory contains environment/package versions, exact server commands,
-server model metadata and logs, complete generated workloads, per-request records,
-per-cell summaries, GPU samples (CUDA), and raw server metrics where available.
-`report/cells.csv`, `REPORT.md`, and `tradeoffs.png` are produced by:
+| File | Purpose |
+|---|---|
+| `REPORT.md` | Per-comparison tables and measurement caveats |
+| `cells.csv` | All cell summaries |
+| `tradeoffs.png` | Static latency/throughput figure |
+| `data.json` | Measured summaries and request events for an interactive replay |
+
+The JSON export omits prompt text, output samples, and error text. Review model
+paths and other identifiers in the summary metadata before publishing.
+
+The planned animation will let readers select configuration, workload, concurrency
+and repetition; replay requests; and compare throughput with latency. It should
+label waiting-for-first-content separately from observed response streaming.
+It must not invent GPU queue stages, KV-cache hits, or exact token timestamps.
+
+The frontend is intentionally deferred until real cluster data exists. See
+[docs/VISUALIZATION.md](docs/VISUALIZATION.md) for the data contract and
+[docs/GITHUB.md](docs/GITHUB.md) for manual publication and GitHub Pages preparation.
+
+## Verification and limitations
 
 ```bash
-.venv/bin/python -m lab.report results/YOUR_RUN
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-Reports show medians across repeats with observed min/max, not confidence intervals.
-Do not pool unrelated machines or report synthetic mock numbers as model results.
-Dependency ranges ease first setup; preserve `pip-freeze.txt` and immutable model
-snapshot paths for later reproduction. The CUDA engine is pinned to vLLM 0.20.0;
-its official installation requirements determine the necessary driver/toolchain.
-Do not force a different Torch/CUDA wheel into that environment.
+These are offline arithmetic/export tests; they do not replace the real GPU smoke
+run. Linux CUDA execution must be validated on your cluster. The repository ships
+no experiment results. Summaries use medians across repeats and observed min/max,
+not confidence intervals. Small samples, synthetic prompts, closed-loop traffic
+and model size limit generalization.
 
-The Mac extra pins MLX LM 0.29.1 with MLX 0.31.1. A first test with MLX 0.32.4
-hit a cross-thread GPU-stream failure in that MLX LM version; the earlier core
-version is used to keep this small-model workflow stable. See the related
-[upstream stream compatibility report](https://github.com/ml-explore/mlx-lm/issues/1179).
-`requirements-mac-tested.txt` records the tested Mac dependency versions; use it
-only on macOS if you need to recreate that environment (`pip install -r
-requirements-mac-tested.txt` followed by `pip install -e .`).
-Use `--warmup-requests` to increase warmups and `--request-timeout` to tune the
-per-request timeout (default 180 seconds).
+NVIDIA results do not measure AMD/ROCm performance. The reproducible methodology
+and observed scheduling trade-offs are the relevant research discussion. A future
+AMD replication requires its own supported ROCm environment.
 
-## One-day execution plan
+Use [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md) to record supported findings,
+negative results and limitations. Do not substitute predicted speedups for data.
 
-1. First hour: complete the Mac mini run and inspect raw requests and plots.
-2. Next hour: upload, check drivers, install the Linux environment, prefetch weights,
-   and pass a GPU smoke test.
-3. Next 3–5 hours: run the full matrix on one homogeneous GPU. Use the pilot to
-   estimate runtime; reduce scope explicitly if the queue or runtime prevents it.
-4. Final 1–2 hours: check failures/output lengths/cache counters, compare hypotheses,
-   write two supported observations and one limitation, then polish the repository.
+## References and troubleshooting
 
-Use [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md) as the results worksheet.
-Do not substitute expected speedups for measured data.
+- [vLLM 0.20.0 CLI](https://docs.vllm.ai/en/v0.20.0/cli/serve/)
+- [vLLM optimization](https://docs.vllm.ai/en/v0.20.0/configuration/optimization/)
+- [GPU installation requirements](https://docs.vllm.ai/en/v0.20.0/getting_started/installation/gpu/)
 
-## Verified upstream references
-
-- [MLX LM server](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/SERVER.md)
-- [vLLM 0.20.0 CLI flags](https://docs.vllm.ai/en/v0.20.0/cli/serve/)
-- [vLLM optimization and tuning](https://docs.vllm.ai/en/v0.20.0/configuration/optimization/)
-- [vLLM GPU installation](https://docs.vllm.ai/en/v0.20.0/getting_started/installation/gpu/)
-
-## Troubleshooting
-
-- Port occupied: pass `--port 8010` to `lab.run`.
-- Startup error or unsupported flag: inspect `server.log`, verify installed vLLM
-  is 0.20.0, and run the mini GPU profile before the full matrix.
-- GPU OOM: ensure another job is not sharing the GPU; reduce active concurrency
-  and/or the model size, record the changed settings, and rerun all paired configs.
-- Compute nodes have no internet: prefetch packages and model snapshots using
-  your site's supported workflow, then use shared cache or local model paths.
-- Model download/authentication error: the defaults are public; check outbound
-  access and available disk. Point `--model` and `--tokenizer` at local snapshots.
-- MLX fails: check the macOS requirement of the resolved MLX release and inspect
-  the saved server log. The mock profile tests the harness without MLX.
+If a server fails to start, inspect its `server.log` and confirm the installed
+vLLM version. For a busy port, pass `--port 8010`. For timeouts, adjust
+`--startup-timeout` or `--request-timeout`. Increase warmups with
+`--warmup-requests`. If memory is insufficient, record any model/concurrency
+changes and rerun all paired configurations consistently.

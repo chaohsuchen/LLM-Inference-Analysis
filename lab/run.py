@@ -1,4 +1,4 @@
-"""Start a backend, run controlled cells, and preserve experiment provenance."""
+"""Run measured vLLM experiments on a Linux CUDA server."""
 import argparse
 import asyncio
 import importlib.metadata
@@ -27,11 +27,6 @@ CONFIGS = {
 
 
 def command(args, config):
-    if args.backend == "mock":
-        return [sys.executable, "-m", "lab.mock_server", "--port", str(args.port)]
-    if args.backend == "mlx":
-        return [sys.executable, "-m", "mlx_lm.server", "--model", args.model,
-                "--host", "127.0.0.1", "--port", str(args.port)]
     seqs, cache, chunk, budget = CONFIGS[config]
     return [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", args.model,
             "--host", "127.0.0.1", "--port", str(args.port),
@@ -68,7 +63,7 @@ def wait_ready(proc, url, timeout):
 
 def provenance():
     versions = {}
-    for package in ("vllm", "mlx-lm", "mlx", "mlx-metal", "torch", "transformers", "aiohttp"):
+    for package in ("vllm", "torch", "transformers", "aiohttp"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -80,21 +75,11 @@ def provenance():
             "utc_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
-class MockTokenizer:
-    """Only used in explicit mock mode; never a real token count."""
-    def encode(self, text, **kwargs):
-        return list(text.encode())
-
-    def decode(self, ids, **kwargs):
-        return bytes(ids).decode(errors="replace")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=["mlx", "vllm", "mock"], required=True)
-    parser.add_argument("--model")
-    parser.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B-Instruct")
-    parser.add_argument("--profile", choices=["mini", "full"], default="mini")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--tokenizer", help="Defaults to the model; accepts a local snapshot path")
+    parser.add_argument("--profile", choices=["smoke", "full"], default="full")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--configs", nargs="+", choices=list(CONFIGS), default=list(CONFIGS))
     parser.add_argument("--concurrency", nargs="+", type=int)
@@ -108,34 +93,32 @@ def main():
     parser.add_argument("--warmup-requests", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     args = parser.parse_args()
-    mini = args.profile == "mini"
-    args.model = args.model or ("mlx-community/Qwen2.5-0.5B-Instruct-4bit" if args.backend == "mlx"
-                                else "Qwen/Qwen2.5-1.5B-Instruct")
-    if args.backend == "vllm" and args.tokenizer == "Qwen/Qwen2.5-0.5B-Instruct":
-        args.tokenizer = args.model
-    counts = args.requests if args.requests is not None else (8 if mini else 128)
-    repeats = args.repeats if args.repeats is not None else (1 if mini else 3)
-    concurrency = args.concurrency if args.concurrency is not None else ([1, 2] if mini else [1, 8, 32])
-    output_tokens = args.output_tokens if args.output_tokens is not None else (24 if mini else 128)
+    smoke = args.profile == "smoke"
+    args.tokenizer = args.tokenizer or args.model
+    counts = args.requests if args.requests is not None else (8 if smoke else 128)
+    repeats = args.repeats if args.repeats is not None else (1 if smoke else 3)
+    concurrency = args.concurrency if args.concurrency is not None else ([1, 2] if smoke else [1, 8, 32])
+    output_tokens = args.output_tokens if args.output_tokens is not None else (24 if smoke else 128)
     if counts < 1 or repeats < 1 or output_tokens < 1 or min(concurrency) < 1:
         parser.error("Counts, concurrency and output tokens must be positive")
     if output_tokens > 1024:
         parser.error("Use <=1024 output tokens to preserve context headroom")
     if args.request_timeout < 1 or args.startup_timeout < 1 or args.warmup_requests < 1:
         parser.error("Timeouts and warmup count must be positive")
-    if args.backend == "mlx" and not mini:
-        parser.error("MLX is for the mini validation profile; use vllm for full experiments")
+    if platform.system() != "Linux":
+        parser.error("Experiments require a Linux CUDA server with a GPU allocation")
+    try:
+        importlib.metadata.version("vllm")
+    except importlib.metadata.PackageNotFoundError:
+        parser.error("vLLM is not installed; run bash scripts/setup_cuda.sh first")
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "environment.json").write_text(json.dumps(provenance(), indent=2))
     with (args.output / "pip-freeze.txt").open("w") as file:
         subprocess.run([sys.executable, "-m", "pip", "freeze"], stdout=file, check=False)
-    if args.backend == "mock":
-        tokenizer = MockTokenizer()
-    else:
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-        (args.output / "tokenizer.json").write_text(json.dumps({
-            "name": args.tokenizer, "commit": tokenizer.init_kwargs.get("_commit_hash")}, indent=2))
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    (args.output / "tokenizer.json").write_text(json.dumps({
+        "name": args.tokenizer, "commit": tokenizer.init_kwargs.get("_commit_hash")}, indent=2))
     base = f"http://127.0.0.1:{args.port}"
     # Refuse to benchmark an unrelated pre-existing service.
     import socket
@@ -143,7 +126,7 @@ def main():
         if sock.connect_ex(("127.0.0.1", args.port)) == 0:
             raise RuntimeError(f"Port {args.port} is already occupied; use --port")
     for repeat in range(repeats):
-        configs = list(args.configs) if args.backend == "vllm" else [args.backend]
+        configs = list(args.configs)
         random.Random(args.seed + repeat).shuffle(configs)
         for config in configs:
             server_dir = args.output / f"repeat-{repeat}" / config
@@ -168,20 +151,23 @@ def main():
                             cell = server_dir / f"{workload}-c{c}"
                             # Each cell gets fresh cache keys; identical text is replayed across configs.
                             ns = f"seed{args.seed}-repeat{repeat}-{workload}-c{c}"
-                            measured = make_workload(tokenizer, workload, counts, args.seed, ns, mini)
+                            measured = make_workload(tokenizer, workload, counts, args.seed, ns)
                             warmup = make_workload(tokenizer, workload, args.warmup_requests,
-                                                   args.seed, ns, mini, id_offset=counts)
-                            metadata = {"backend": args.backend, "config": config, "repeat": repeat,
+                                                   args.seed, ns, id_offset=counts)
+                            metadata = {"backend": "vllm", "config": config, "repeat": repeat,
                                         "model": args.model, "tokenizer": args.tokenizer,
                                         "workload": workload, "concurrency": c, "seed": args.seed,
-                                        "profile": args.profile, "synthetic": args.backend == "mock",
+                                        "profile": args.profile,
+                                        "measurement_source": "live_vllm_http",
+                                        "prompt_source": "deterministic_synthetic_workload",
+                                        "timeline_timebase": "seconds since measured cell start",
                                         "requested_output_tokens": output_tokens,
                                         "warmup_requests": args.warmup_requests,
                                         "cache_regime": "warm shared prefix; fresh cell namespace",
                                         "arrival_process": "closed-loop fixed concurrency"}
                             fetch(base + "/metrics", server_dir / f"{workload}-c{c}-metrics-before.txt")
                             result = asyncio.run(benchmark(base, args.model, measured, c, output_tokens,
-                                                          args.backend, cell, metadata, warmup,
+                                                          cell, metadata, warmup,
                                                           timeout=args.request_timeout))
                             fetch(base + "/metrics", server_dir / f"{workload}-c{c}-metrics-after.txt")
                             print(f"{config} r{repeat} {workload} c{c}: "
