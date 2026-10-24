@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-inference-lab"
+version = "0.1.0"
+description = "Controlled serving experiments for agent-inspired LLM workloads"
+requires-python = ">=3.10"
+dependencies = ["aiohttp>=3.10,<4", "transformers>=4.51,<5", "matplotlib>=3.9,<4"]
+
+[project.optional-dependencies]
+mac = ["mlx-lm==0.29.1; sys_platform == 'darwin'", "mlx==0.31.1; sys_platform == 'darwin'"]
+cuda = ["vllm==0.20.0; sys_platform == 'linux'"]
+
+[tool.setuptools.packages.find]
+include = ["lab*"]
