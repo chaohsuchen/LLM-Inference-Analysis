@@ -1,8 +1,12 @@
 # Faster serving depends on what you ask the model to do
 
-I started with a practical question: if several users share one model server, which optimization makes the service feel faster, and what does it cost elsewhere?
+**Have you ever wondered what happens to your short question when someone else sends a long document to the same AI server?** Does your request get through quickly, or do you spend longer staring at an empty response?
 
-It is tempting to answer that with one throughput number. But a server can produce more text overall while some users wait longer for the first word. I wanted to measure both sides and understand when the answer changes.
+That question led me to a broader one: when several users share one GPU, which serving optimizations actually improve their experience? A server can produce more text per second while some users still wait longer for the first word. So a single “faster” number would not tell the whole story.
+
+To investigate, I built a controlled experiment with real model responses and synthetic prompts. I compared processing requests together, reusing work on shared prompt beginnings, and splitting long-input processing into smaller pieces. I measured both total output and the wait for the first response, then repeated the comparisons at different levels of concurrent demand.
+
+The results gave me a useful surprise: a smaller processing budget improved typical first-response latency but made the slower short requests wait longer under heavier load. Here is how I designed the experiment, checked the evidence, and worked out what that trade-off means.
 
 ![Three measured findings](figures/research_highlights.png)
 

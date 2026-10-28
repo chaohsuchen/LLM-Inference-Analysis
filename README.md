@@ -1,8 +1,10 @@
 # LLM Inference Analysis
 
-**When does an inference optimization actually help?** A measured study of batching, prefix caching, and chunked prefill using vLLM on one NVIDIA RTX 4090.
+**Have you ever wondered whether a faster AI server means a shorter wait for every user?** Imagine a group of people using the same AI assistant: some send a short question, while others paste a long document. How should the server share its GPU—and could an optimization help the typical user while making the slower requests wait longer?
 
-I built a controlled benchmark around three kinds of synthetic prompts: unique requests, a shared policy, and a mix of short and long inputs. The full experiment covers **162 cells, three repetitions, and 20,736 measured requests with zero failures**. It measures real model responses from Qwen2.5-1.5B-Instruct.
+To investigate, I ran a controlled experiment comparing three ways to serve requests: processing them together (batching), reusing work on shared prompt beginnings (prefix caching), and processing long inputs in smaller pieces (chunked prefill). The goal was to measure both how much text the server produced and how long users waited for the first response.
+
+Using vLLM and Qwen2.5-1.5B-Instruct on one NVIDIA RTX 4090, I tested unique prompts, a shared policy, and a mix of short and long inputs. The full experiment covers **162 cells, three repetitions, and 20,736 measured requests with zero failures**. The most interesting finding: one configuration improved typical first-response latency while worsening the wait for slower short requests.
 
 ![Measured research highlights: batching scales throughput, caching helps shared prompts, and a smaller prefill budget can worsen tail latency.](docs/figures/research_highlights.png)
 
