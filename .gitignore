@@ -2,7 +2,7 @@
 __pycache__/
 *.egg-info/
 .DS_Store
-results/
+/results/
 logs/
 dist/
 .env
